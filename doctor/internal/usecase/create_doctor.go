@@ -13,6 +13,12 @@ var (
 	ErrEmailAlreadyExists = errors.New("a doctor with this email already exists")
 )
 
+type CreateDoctorRequest struct {
+	FullName       string `json:"full_name" binding:"required"`
+	Specialization string `json:"specialization" binding:"required"`
+	Email          string `json:"email" binding:"required,email"`
+}
+
 type CreateDoctorUseCase interface {
 	Execute(ctx context.Context, doctor *model.Doctor) error
 }
