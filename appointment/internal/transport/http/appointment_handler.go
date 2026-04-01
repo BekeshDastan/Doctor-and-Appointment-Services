@@ -1,6 +1,8 @@
 package http
 
 import (
+	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -21,11 +23,11 @@ type UpdateStatusRequest struct {
 }
 
 type AppointmentHandler struct {
+	idCounter           uint64
 	createUseCase       usecase.CreateAppointmentUseCase
 	getUseCase          *usecase.GetAppointmentUseCase
 	listUseCase         *usecase.ListAppointmentsUseCase
 	updateStatusUseCase *usecase.UpdateStatusUseCase
-	idCounter           uint64
 }
 
 func NewAppointmentHandler(
@@ -35,11 +37,11 @@ func NewAppointmentHandler(
 	update *usecase.UpdateStatusUseCase,
 ) *AppointmentHandler {
 	return &AppointmentHandler{
+		idCounter:           0,
 		createUseCase:       create,
 		getUseCase:          get,
 		listUseCase:         list,
 		updateStatusUseCase: update,
-		idCounter:           0,
 	}
 }
 
@@ -71,6 +73,15 @@ func (h *AppointmentHandler) Create(c *gin.Context) {
 
 	err := h.createUseCase.Execute(c.Request.Context(), appointment)
 	if err != nil {
+		log.Printf("[ERROR] Failed to create appointment for DoctorID %s: %v", req.DoctorID, err)
+
+		if errors.Is(err, usecase.ErrDoctorServiceUnavailable) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error": "The Doctor Service is temporarily unavailable. Cannot validate doctor existence. Please try again later.",
+			})
+			return
+		}
+
 		if err.Error() == "doctorID and aappointment title is required" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
