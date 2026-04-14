@@ -1,3 +1,4 @@
+
 # Doctor and Appointment Services Platform - gRPC Migration
 
 ## 1. Project Overview and Purpose
@@ -309,6 +310,18 @@ Both services will attempt to connect to PostgreSQL on `localhost:5432` with cre
 ---
 
 ## 10. Testing 
+
+
+
+<img width="888" height="820" alt="image" src="https://github.com/user-attachments/assets/d3b2d04c-d2fe-4a7a-bb7d-0649117cd8d2" />
+<img width="892" height="607" alt="image" src="https://github.com/user-attachments/assets/14500751-74ea-4c43-9d36-bc75896af5d7" />
+<img width="860" height="569" alt="image" src="https://github.com/user-attachments/assets/efced08b-fb67-4267-af42-a1ffe2255566" />
+
+<img width="873" height="830" alt="image" src="https://github.com/user-attachments/assets/fd2e0ec1-1648-4afa-96bd-e714728a29cb" />
+<img width="894" height="655" alt="image" src="https://github.com/user-attachments/assets/e83a80bf-4973-4efc-b4ad-c83aa3987428" />
+<img width="879" height="629" alt="image" src="https://github.com/user-attachments/assets/43770b4d-523b-4345-9755-a308fffdc146" />
+<img width="899" height="635" alt="image" src="https://github.com/user-attachments/assets/849c9d21-d16e-4afb-b26d-7d21cfb44faa" />
+
 
 
 ## 11. Failure Scenarios and Resilience
