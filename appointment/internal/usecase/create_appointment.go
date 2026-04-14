@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/appointment/internal/model"
@@ -27,15 +26,15 @@ func NewCreateAppointmentUseCase(repo repository.AppointmentRepository, dc Docto
 
 func (uc *CreateAppointmentInteractor) Execute(ctx context.Context, appointment *model.Appointment) error {
 	if appointment.Title == "" || appointment.DoctorID == "" {
-		return errors.New("doctorID and a" + "appointment title is required")
+		return ErrRequiredFields
 	}
 	exists, err := uc.doctorClient.CheckDoctorExists(ctx, appointment.DoctorID)
 
 	if err != nil {
-		return err
+		return ErrDoctorServiceUnavailable
 	}
 	if !exists {
-		return errors.New("The doctor doesn't exist")
+		return ErrDoctorNotFound
 	}
 	appointment.Status = model.New
 	appointment.CreatedAt = time.Now()

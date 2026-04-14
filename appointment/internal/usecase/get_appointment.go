@@ -16,5 +16,12 @@ func NewGetAppointmentUseCase(repo repository.AppointmentRepository) *GetAppoint
 }
 
 func (uc *GetAppointmentUseCase) Execute(ctx context.Context, id string) (*model.Appointment, error) {
-	return uc.repo.GetByID(ctx, id)
+	apt, err := uc.repo.GetByID(ctx, id)
+	if err != nil {
+		if err.Error() == "appointment not found" {
+			return nil, ErrAptNotFound
+		}
+		return nil, err
+	}
+	return apt, nil
 }

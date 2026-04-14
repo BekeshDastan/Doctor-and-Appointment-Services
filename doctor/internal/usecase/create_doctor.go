@@ -2,15 +2,9 @@ package usecase
 
 import (
 	"context"
-	"errors"
 
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/doctor/internal/model"
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/doctor/internal/repository"
-)
-
-var (
-	ErrEmptyFields        = errors.New("full name, specialization, and email are required")
-	ErrEmailAlreadyExists = errors.New("a doctor with this email already exists")
 )
 
 type CreateDoctorRequest struct {

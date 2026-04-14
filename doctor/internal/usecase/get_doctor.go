@@ -21,7 +21,14 @@ func NewGetDoctorByIdUseCase(repo repository.DoctorRepository) GetDoctorByIdUseC
 
 func (uc *getDoctorByIdUseCase) Execute(ctx context.Context, id string) (*model.Doctor, error) {
 	if id == "" {
-		return nil, ErrEmptyFields
+		return nil, ErrEmptyID
 	}
-	return uc.repo.GetDoctorById(ctx, id)
+	doctor, err := uc.repo.GetDoctorById(ctx, id)
+	if err != nil {
+		if err.Error() == "doctor not found" {
+			return nil, ErrDoctorNotFound
+		}
+		return nil, err
+	}
+	return doctor, nil
 }

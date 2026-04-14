@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/appointment/internal/model"
@@ -24,11 +23,11 @@ func (uc *UpdateStatusUseCase) Execute(ctx context.Context, id string, newStatus
 	}
 
 	if appt.Status == model.Done && newStatus == model.New {
-		return errors.New("cannot revert status from 'done' to 'new'")
+		return ErrStatusTransition
 	}
 
 	if newStatus != model.New && newStatus != model.In_Progress && newStatus != model.Done {
-		return errors.New("invalid status")
+		return ErrInvalidStatus
 	}
 
 	appt.Status = newStatus
