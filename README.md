@@ -1,530 +1,497 @@
-# Doctor and Appointment Services Platform - gRPC Migration
+# Medical Scheduling Platform — Assignment 3
 
-## 1. Project Overview and Purpose
+## 1. Project Overview
 
-This project implements a **Medical Scheduling Platform** consisting of two independent microservices: **Doctor Service** and **Appointment Service**. The system achieves **inter-service communication exclusively through gRPC** and follows **Clean Architecture** principles.
+This project extends the Medical Scheduling Platform (AP2 Assignment 2) with two additional infrastructure layers:
 
-**Key Purpose:**
-- Demonstrate service decomposition with **bounded contexts** (Doctor and Appointment domains)
-- Implement **gRPC-based synchronous communication** between services
-- Maintain strict **data ownership** — each service manages its own database
-- Preserve **Clean Architecture layering** across the migration from REST to gRPC
+**What changed vs Assignment 2:**
+- **PostgreSQL schema** is now managed exclusively through versioned migration files (`golang-migrate`). No raw DDL exists in application code.
+- **NATS message broker** added: every successful write operation publishes a domain event.
+- **Notification Service** — a new third binary that subscribes to all events and logs structured JSON to stdout.
+- Directory names updated: `doctor/` → `doctor-service/`, `appointment/` → `appointment-service/`, plus new `notification-service/`.
+- Database transactions added to `CreateDoctor` (email uniqueness check + insert in one transaction).
+- Each service has its own **Dockerfile**; the entire system can be started with a single `docker compose up --build`.
 
+**What did NOT change:**
+- Domain models (`Doctor`, `Appointment`, `Status`) are identical.
+- Use-case business logic and rules are identical.
+- gRPC service contracts and generated proto stubs are identical.
+- Clean Architecture layering and dependency direction are identical.
 
-## 2. Service Responsibilities and Data Ownership
+---
 
-### **Doctor Service** (gRPC on port `50051`)
-- **Owns**: Doctor entity and doctor-related data
-- **Responsibilities**: 
-  - `CreateDoctor` — Create a doctor with full_name, specialization, and email (email must be unique)
-  - `GetDoctor` — Retrieve doctor by ID (returns `NOT_FOUND` if ID does not exist)
-  - `ListDoctors` — Return all stored doctors
-- **Protocol**: gRPC
-- **Database**: PostgreSQL (`doctor` database)
+## 2. Broker Choice — NATS
 
-### **Appointment Service** (gRPC on port `50052`)
-- **Owns**: Appointment entity and appointment-related data
-- **Responsibilities**:
-  - `CreateAppointment` — Create appointment with title, description, and doctor_id (validates doctor existence via Doctor Service)
-  - `GetAppointment` — Retrieve appointment by ID
-  - `ListAppointments` — Return all stored appointments
-  - `UpdateAppointmentStatus` — Update status (new → in_progress → done; done → new is forbidden)
-- **Protocol**: gRPC (calls Doctor Service via gRPC)
-- **Database**: PostgreSQL (`appointment` database)
+**Chosen broker: NATS (Core)**
 
+**Reason:** NATS fits the use case perfectly — the Notification Service is stateless and only needs to log events. Core NATS provides simple fire-and-forget pub/sub with minimal setup (single Docker image, no queues to configure). There is no need for durable delivery because a missed log event is not a critical failure.
 
-## 3. Clean Architecture Structure
+**What would change if we switched to RabbitMQ:**
+- Replace `github.com/nats-io/nats.go` with `github.com/rabbitmq/amqp091-go`
+- Declare a fanout exchange `ap2.events`; each subscriber binds its own exclusive queue
+- Replace `NATS_URL` with `AMQP_URL` in all three services
+- Add explicit message acknowledgment (`d.Ack(false)`) in the notification handler
 
-Both services follow this strict layered architecture:
+**When durable delivery becomes necessary in production:**
+If event loss is unacceptable (e.g., billing events, audit logs), switch to **RabbitMQ with persistent queues + publisher confirms**, or **NATS JetStream** with subject-level persistence.
 
-```
-service/
-├── cmd/service-<name>/
-│   └── main.go                      # Application entry point and dependency wiring
-├── internal/
-│   ├── model/                       # Domain entities (no external dependencies)
-│   │   ├── doctor.go
-│   │   └── appointment.go
-│   ├── repository/                  # Data persistence layer
-│   │   ├── doctor_repository.go
-│   │   └── appointment_repository.go
-│   ├── usecase/                     # Business logic layer (interfaces only)
-│   │   ├── create_doctor.go
-│   │   ├── get_doctor.go
-│   │   ├── list_doctor.go
-│   │   ├── create_appointment.go
-│   │   ├── get_appointment.go
-│   │   ├── list_appointment.go
-│   │   └── update_status.go
-│   ├── transport/grpc/              # Delivery layer (gRPC handlers)
-│   │   └── doctor_server.go
-│   │   └── appointment_server.go
-│   └── client/                      # External service clients (Appointment only)
-│       └── doctor_grpc_client.go
-└── proto/
-    ├── doctor.proto
-    ├── doctor.pb.go
-    └── doctor_grpc.pb.go
+---
+
+## 3. Environment Variables
+
+| Service | Variable | Default | Description |
+|---|---|---|---|
+| doctor-service | `DOCTOR_DATABASE_URL` | `postgres://postgres:12345678@localhost:5432/doctor?sslmode=disable` | PostgreSQL DSN |
+| doctor-service | `DOCTOR_GRPC_PORT` | `50051` | gRPC listen port |
+| doctor-service | `NATS_URL` | `nats://localhost:4222` | NATS connection URL |
+| appointment-service | `APPOINTMENT_DATABASE_URL` | `postgres://postgres:12345678@localhost:5432/appointment?sslmode=disable` | PostgreSQL DSN |
+| appointment-service | `APPOINTMENT_GRPC_PORT` | `50052` | gRPC listen port |
+| appointment-service | `DOCTOR_SERVICE_URL` | `localhost:50051` | Doctor Service gRPC address |
+| appointment-service | `NATS_URL` | `nats://localhost:4222` | NATS connection URL |
+| notification-service | `NATS_URL` | `nats://localhost:4222` | NATS connection URL |
+
+> **In Docker Compose** the defaults are overridden automatically — services communicate by container name (`postgres`, `nats`, `doctor-service`) instead of `localhost`.
+
+---
+
+## 4. Running with Docker (recommended)
+
+All five containers (Postgres, NATS, doctor-service, appointment-service, notification-service) start with one command:
+
+```bash
+docker compose up --build
 ```
 
-**Dependency Rule:** Dependencies only point inward.  
-`transport/grpc` → `usecase` → `repository` → `model`
-
-**Critical Constraint:** 
-- ✅ Domain models (`model/`) must NOT import protobuf-generated types
-- ✅ Use cases must NOT import protobuf-generated types
-- ✅ Protobuf types belong ONLY in the `transport/grpc/` layer
-- ✅ Mapping between proto messages and domain models is the responsibility of the delivery layer
-
-
-## 4. gRPC Service Contracts
-
-### **Doctor Service** (`doctor/proto/doctor.proto`)
-
-```protobuf
-service DoctorService {
-  rpc CreateDoctor(CreateDoctorRequest) returns (DoctorResponse);
-  rpc GetDoctor(GetDoctorRequest) returns (DoctorResponse);
-  rpc ListDoctors(ListDoctorsRequest) returns (ListDoctorsResponse);
-}
-
-message CreateDoctorRequest {
-  string full_name = 1;
-  string specialization = 2;
-  string email = 3;
-}
-
-message GetDoctorRequest {
-  string id = 1;
-}
-
-message ListDoctorsRequest {}
-
-message DoctorResponse {
-  string id = 1;
-  string full_name = 2;
-  string specialization = 3;
-  string email = 4;
-}
-
-message ListDoctorsResponse {
-  repeated DoctorResponse doctors = 1;
-}
+Run in background:
+```bash
+docker compose up --build -d
 ```
 
-### **Appointment Service** (`appointment/proto/appointment.proto`)
+View logs of a specific service:
+```bash
+docker compose logs -f notification-service
+docker compose logs -f doctor-service
+docker compose logs -f appointment-service
+```
 
-```protobuf
-service AppointmentService {
-  rpc CreateAppointment(CreateAppointmentRequest) returns (AppointmentResponse);
-  rpc GetAppointment(GetAppointmentRequest) returns (AppointmentResponse);
-  rpc ListAppointments(ListAppointmentsRequest) returns (ListAppointmentsResponse);
-  rpc UpdateAppointmentStatus(UpdateStatusRequest) returns (AppointmentResponse);
-}
+Stop everything:
+```bash
+docker compose down
+```
 
-message CreateAppointmentRequest {
-  string title = 1;
-  string description = 2;
-  string doctor_id = 3;
-}
+Stop and delete all data (volumes):
+```bash
+docker compose down -v
+```
 
-message GetAppointmentRequest {
-  string id = 1;
-}
+### What happens automatically
+1. Postgres starts and runs `scripts/init-db.sh` — creates `doctor` and `appointment` databases.
+2. `doctor-service` starts, runs migrations (`000001_create_doctors.up.sql`), then serves gRPC on `:50051`.
+3. `appointment-service` starts after Postgres and `doctor-service` are ready, runs migrations, serves gRPC on `:50052`.
+4. `notification-service` starts, connects to NATS, subscribes to all three subjects, and waits for events.
 
-message ListAppointmentsRequest {}
+### Dockerfile overview
 
-message UpdateStatusRequest {
-  string id = 1;
-  string status = 2;
-}
+| Service | Build context | Notes |
+|---|---|---|
+| `doctor-service/Dockerfile` | `./doctor-service` | Multi-stage: `golang:1.25-alpine` → `alpine:3.20`. Binary + `migrations/` copied to runtime image. |
+| `appointment-service/Dockerfile` | `.` (project root) | Build context must include `doctor-service/` due to the `replace ../doctor-service` directive in `go.mod`. |
+| `notification-service/Dockerfile` | `./notification-service` | Binary only — no migrations, no database. |
 
-message AppointmentResponse {
-  string id = 1;
-  string title = 2;
-  string description = 3;
-  string doctor_id = 4;
-  string status = 5;
-  string created_at = 6;
-  string updated_at = 7;
-}
+---
 
-message ListAppointmentsResponse {
-  repeated AppointmentResponse appointments = 1;
-}
+## 5. Running Locally (without Docker)
+
+### Prerequisites
+- Go 1.25+
+- PostgreSQL 14+ running on `localhost:5432`
+- NATS server on `localhost:4222`
+
+### Start NATS locally
+```bash
+# Docker (recommended)
+docker run -d -p 4222:4222 nats:2.10-alpine
+
+# or native binary
+nats-server
+```
+
+### Create databases manually (first time only)
+```bash
+psql -U postgres -c "CREATE DATABASE doctor;"
+psql -U postgres -c "CREATE DATABASE appointment;"
+```
+Migrations are applied automatically when each service starts.
+
+### Start services (in order)
+
+**Terminal 1 — Doctor Service:**
+```bash
+cd doctor-service
+go run .
+```
+
+**Terminal 2 — Appointment Service:**
+```bash
+cd appointment-service
+go run .
+```
+
+**Terminal 3 — Notification Service:**
+```bash
+cd notification-service
+go run .
+```
+
+> **Why this order?** Appointment Service dials Doctor Service at startup. If Doctor Service is not running, Appointment Service exits with a fatal error.
+
+---
+
+## 6. Database Migrations
+
+Migrations run **automatically on service startup** before the gRPC server begins accepting requests.
+
+### Manual rollback (golang-migrate CLI)
+
+Install the CLI:
+```bash
+go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+```
+
+**Roll back one step (tested during defense):**
+```bash
+migrate -path doctor-service/migrations \
+  -database "postgres://postgres:12345678@localhost:5432/doctor?sslmode=disable" down 1
+
+migrate -path appointment-service/migrations \
+  -database "postgres://postgres:12345678@localhost:5432/appointment?sslmode=disable" down 1
+```
+
+**Re-apply:**
+```bash
+migrate -path doctor-service/migrations \
+  -database "postgres://postgres:12345678@localhost:5432/doctor?sslmode=disable" up
+
+migrate -path appointment-service/migrations \
+  -database "postgres://postgres:12345678@localhost:5432/appointment?sslmode=disable" up
+```
+
+**Verify schema:**
+```bash
+psql -U postgres -d doctor -c '\d doctors'
+psql -U postgres -d appointment -c '\d appointments'
+```
+
+### Migration files
+
+```
+doctor-service/migrations/
+  000001_create_doctors.up.sql    — CREATE TABLE doctors (...)
+  000001_create_doctors.down.sql  — DROP TABLE IF EXISTS doctors
+
+appointment-service/migrations/
+  000001_create_appointments.up.sql    — CREATE TABLE appointments (...)
+  000001_create_appointments.down.sql  — DROP TABLE IF EXISTS appointments
 ```
 
 ---
 
-## 5. Inter-Service Communication (gRPC)
+## 7. Event Contract
 
-**Appointment Service → Doctor Service Call Flow:**
+All events are serialized as JSON and published to NATS.
 
-1. Client calls `AppointmentService.CreateAppointment(title, doctor_id, ...)`
-2. gRPC handler unpacks the proto message
-3. Use case `CreateAppointmentUseCase.Execute()` is invoked
-4. Use case calls `DoctorServiceClient.CheckDoctorExists(doctor_id)` (injected interface)
-5. Client implementation calls `DoctorService.GetDoctor()` via gRPC
-6. If doctor exists (returns `DoctorResponse`), appointment is created
-7. If doctor does NOT exist (gRPC returns `codes.NotFound`), use case returns error
-8. gRPC handler maps error to appropriate status code and returns to client
+| Subject | Published by | Trigger | Required JSON Fields |
+|---|---|---|---|
+| `doctors.created` | doctor-service | `CreateDoctor` succeeds | `event_type`, `occurred_at`, `id`, `full_name`, `specialization`, `email` |
+| `appointments.created` | appointment-service | `CreateAppointment` succeeds | `event_type`, `occurred_at`, `id`, `title`, `doctor_id`, `status` |
+| `appointments.status_updated` | appointment-service | `UpdateAppointmentStatus` succeeds | `event_type`, `occurred_at`, `id`, `old_status`, `new_status` |
 
-**Key Design Decision:**
-- The gRPC client is **injected as an interface** into the use case
-- The use case NEVER imports protobuf types from doctor service
-- Mapping happens in the delivery layer only
+### Example payloads
 
----
-
-## 6. gRPC Error Handling
-
-All errors use **standard gRPC status codes** from `google.golang.org/grpc/codes`:
-
-| Scenario | gRPC Status Code | Example |
-|----------|------------------|---------|
-| Required field missing | `codes.InvalidArgument` | "Title and doctor_id are required" |
-| Email already in use | `codes.AlreadyExists` | "Email already in use" |
-| Doctor ID not found (local) | `codes.NotFound` | "Doctor not found" |
-| Doctor Service unreachable | `codes.Unavailable` | "Doctor service is unavailable" |
-| Doctor does not exist (remote check) | `codes.FailedPrecondition` | "Doctor does not exist" |
-| Invalid status transition (done→new) | `codes.InvalidArgument` | "Cannot revert from done to new" |
-| Internal error | `codes.Internal` | "Failed to create appointment" |
-
----
-
-## 7. Installation and Setup
-
-### **Prerequisites**
-- **Go 1.20+** (project uses Go 1.25.0)
-- **PostgreSQL** (tested on PostgreSQL 14+)
-- **protoc** (Protocol Buffer compiler)
-- **Go gRPC plugins**
-
-### **Install protoc and Go Plugins**
-
-**Windows (using Chocolatey):**
-```bash
-choco install protoc
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-```
-
-**macOS (using Homebrew):**
-```bash
-brew install protobuf
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-```
-
-**Linux (Ubuntu/Debian):**
-```bash
-apt-get install -y protobuf-compiler
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-```
-
-### **Verify Installation**
-```bash
-protoc --version
-which protoc-gen-go
-which protoc-gen-go-grpc
-```
-
----
-
-## 8. Regenerating Proto Stubs
-
-If you modify `.proto` files, regenerate the Go stubs:
-
-**For Doctor Service:**
-```bash
-cd doctor/proto
-protoc --go_out=. --go-grpc_out=. doctor.proto
-```
-
-**For Appointment Service:**
-```bash
-cd appointment/proto
-protoc --go_out=. --go-grpc_out=. appointment.proto
-```
-
----
-
-## 9. Running the Services Locally
-
-### **Database Setup**
-
-Create two PostgreSQL databases:
-
-```sql
--- Connect to PostgreSQL as admin
-psql -U postgres
-
--- Create doctor database
-CREATE DATABASE doctor;
-
--- Create appointment database
-CREATE DATABASE appointment;
-
--- Create tables
-\c doctor
-CREATE TABLE doctors (
-  id VARCHAR(36) PRIMARY KEY,
-  full_name VARCHAR(255) NOT NULL,
-  specialization VARCHAR(255) NOT NULL,
-  email VARCHAR(255) UNIQUE NOT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-\c appointment
-CREATE TABLE appointments (
-  id VARCHAR(36) PRIMARY KEY,
-  doctor_id VARCHAR(36) NOT NULL,
-  title VARCHAR(255) NOT NULL,
-  description TEXT,
-  status VARCHAR(50) DEFAULT 'new',
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-### **Start Services**
-
-**Terminal 1 - Doctor Service (gRPC on :50051):**
-```bash
-cd doctor
-go run cmd/service-doctor/main.go
-# Output: Doctor Service is running on port :50051 (gRPC)
-```
-
-**Terminal 2 - Appointment Service (gRPC on :50052):**
-```bash
-cd appointment
-go run cmd/service-appointment/main.go
-# Output: Appointment Service is running on port :50052 (gRPC)
-```
-
-Both services will attempt to connect to PostgreSQL on `localhost:5432` with credentials `postgres:12345678`.
-
----
-
-## 10. Testing 
-
-
-## 11. Failure Scenarios and Resilience
-
-### **Scenario 1: Doctor Service Unreachable**
-
-**What happens:**
-1. Appointment Service starts but cannot connect to Doctor Service on `:50051`
-2. Main function logs: `"Failed to connect to Doctor Service: ..."`
-3. Appointment Service startup fails with exit code 1
-
-**How to test:**
-- Start Appointment Service without starting Doctor Service
-- Observe error in logs
-
-**gRPC Status Code Returned:** `codes.Unavailable`
-
-### **Scenario 2: Doctor Does Not Exist (Valid Doctor Service)**
-
-**What happens:**
-1. Client calls `CreateAppointment` with non-existent `doctor_id`
-2. Appointment Service calls `Doctor Service.GetDoctor(doctor_id)`
-3. Doctor Service returns `codes.NotFound`
-4. Appointment Service catches the error and returns `codes.FailedPrecondition`
-
-**Example error response:**
+**doctors.created:**
 ```json
 {
-  "code": 9,
-  "message": "Doctor does not exist"
+  "event_type": "doctors.created",
+  "occurred_at": "2026-05-02T10:23:44Z",
+  "id": "doc-1",
+  "full_name": "Dr. Aisha Seitkali",
+  "specialization": "Cardiology",
+  "email": "a.seitkali@clinic.kz"
 }
 ```
 
-**How to test:**
-```bash
-grpcurl -plaintext -d '{"title":"Test","description":"Test","doctor_id":"invalid-id"}' localhost:50052 appointment.AppointmentService/CreateAppointment
-```
-
-### **Scenario 3: Email Already Exists**
-
-**What happens:**
-1. Client calls `CreateDoctor` with duplicate email
-2. Repository detects unique constraint violation
-3. gRPC handler catches error and returns `codes.AlreadyExists`
-
-**Example error response:**
+**appointments.created:**
 ```json
 {
-  "code": 6,
-  "message": "Email already in use"
+  "event_type": "appointments.created",
+  "occurred_at": "2026-05-02T10:24:01Z",
+  "id": "appt-1",
+  "title": "Initial cardiac consultation",
+  "doctor_id": "doc-1",
+  "status": "new"
 }
 ```
 
-### **Scenario 4: Invalid Status Transition**
-
-**What happens:**
-1. Appointment status is `done`
-2. Client calls `UpdateAppointmentStatus` with `status="new"`
-3. Use case rejects transition: "cannot revert status from 'done' to 'new'"
-4. gRPC handler returns `codes.InvalidArgument`
-
-**Example error response:**
+**appointments.status_updated:**
 ```json
 {
-  "code": 3,
-  "message": "Cannot revert from done to new"
+  "event_type": "appointments.status_updated",
+  "occurred_at": "2026-05-02T10:25:10Z",
+  "id": "appt-1",
+  "old_status": "new",
+  "new_status": "in_progress"
 }
 ```
 
 ---
 
-## 12. REST vs gRPC: Trade-offs and When to Use Each
+## 8. Notification Service
 
-### **Trade-off 1: Protocol Efficiency**
+The Notification Service is a standalone subscriber binary with **no gRPC server, no HTTP server, and no database**.
 
-| Aspect | REST | gRPC |
-|--------|------|------|
-| **Encoding** | JSON (text-based) | Protocol Buffers (binary) |
-| **Message Size** | Large (human-readable) | Small (compact binary) |
-| **Network Bandwidth** | High | Low (-70% in practice) |
-| **Best For** | Public APIs, web browsers | Microservice-to-microservice |
+**What it does:**
+1. On startup: connects to NATS with exponential backoff (1s → 2s → 4s → 8s → 16s). After 5 failed attempts, exits with non-zero code.
+2. Subscribes to three subjects: `doctors.created`, `appointments.created`, `appointments.status_updated`.
+3. For each message: deserializes the JSON payload and prints one structured JSON log line to stdout.
+4. On `SIGINT`/`SIGTERM`: drains in-flight messages, closes the NATS connection, exits with code 0.
 
-**When to use:**
-- Use **REST** for client-facing APIs (mobile apps, web frontends)
-- Use **gRPC** for internal service communication (faster, smaller messages)
+**Log output format (one line per event):**
+```json
+{"time":"2026-05-02T10:23:44Z","subject":"doctors.created","event":{"email":"a.seitkali@clinic.kz","event_type":"doctors.created","full_name":"Dr. Aisha Seitkali","id":"...","occurred_at":"2026-05-02T10:23:44Z","specialization":"Cardiology"}}
+```
 
-### **Trade-off 2: Development Speed vs Type Safety**
+**How to verify during a live demo:**
+```bash
+# In one terminal watch the notification-service logs
+docker compose logs -f notification-service
 
-| Aspect | REST | gRPC |
-|--------|------|------|
-| **Type Definition** | Loose (JSON can be anything) | Strict (Proto contracts) |
-| **Code Generation** | Manual (or tools) | Automatic (protoc) |
-| **Breaking Changes** | Easier to ignore versioning | Enforced by proto evolution rules |
-| **Best For** | Rapid prototyping | Production systems with stability guarantees |
+# In another terminal call CreateDoctor
+grpcurl -plaintext -d '{"full_name":"Dr. Test","specialization":"X","email":"t@t.com"}' \
+  localhost:50051 doctor.DoctorService/CreateDoctor
+```
+Within 1–2 seconds a JSON line with `"subject":"doctors.created"` appears in the notification-service terminal.
 
-**When to use:**
-- Use **REST** for quick iterations and experimental APIs
-- Use **gRPC** when you need contract consistency across teams
+---
 
-### **Trade-off 3: Client Ecosystem and Tooling**
+## 9. gRPC Test Commands
 
-| Aspect | REST | gRPC |
-|--------|------|------|
-| **Browser Support** | Native (fetch, XMLHttpRequest) | No (requires gRPC-web for browsers) |
-| **Debugging Tools** | cURL, Postman, browser DevTools | grpcurl, Postman (limited), custom tools |
-| **Load Balancing** | Standard HTTP load balancers | Requires aware load balancers |
-| **Best For** | Web APIs with diverse clients | Polyglot microservices (Go, Java, Python, etc.) |
+### Create a Doctor
+```bash
+grpcurl -plaintext -d '{
+  "full_name": "Dr. Aisha Seitkali",
+  "specialization": "Cardiology",
+  "email": "a.seitkali@clinic.kz"
+}' localhost:50051 doctor.DoctorService/CreateDoctor
+```
+**Expected notification-service output:**
+```json
+{"time":"...","subject":"doctors.created","event":{"email":"a.seitkali@clinic.kz","event_type":"doctors.created","full_name":"Dr. Aisha Seitkali","id":"<uuid>","occurred_at":"...","specialization":"Cardiology"}}
+```
 
-**When to use:**
-- Use **REST** when clients are browsers or mobile apps with limited gRPC support
-- Use **gRPC** when all clients are microservices you control (Go, Node, Python, Java, etc.)
+### Get a Doctor
+```bash
+grpcurl -plaintext -d '{"id": "<doctor-id>"}' localhost:50051 doctor.DoctorService/GetDoctor
+```
 
-### **Project Decision: Why gRPC?**
+### List All Doctors
+```bash
+grpcurl -plaintext -d '{}' localhost:50051 doctor.DoctorService/ListDoctors
+```
 
-This project **migrated to gRPC** because:
-1. **Both clients are microservices** (Appointment ↔ Doctor service communication)
-2. **High performance** needed for medical scheduling platform (low latency)
-3. **Type safety** ensures appointment/doctor contracts don't break
-4. **No browser clients** accessing internal service-to-service APIs
-5. **Polyglot ready** — future services can be written in any language supporting gRPC
+### Create an Appointment
+```bash
+grpcurl -plaintext -d '{
+  "title": "Initial cardiac consultation",
+  "description": "First visit",
+  "doctor_id": "<doctor-id>"
+}' localhost:50052 appointment.AppointmentService/CreateAppointment
+```
+**Expected notification-service output:**
+```json
+{"time":"...","subject":"appointments.created","event":{"doctor_id":"<doctor-id>","event_type":"appointments.created","id":"<uuid>","occurred_at":"...","status":"new","title":"Initial cardiac consultation"}}
+```
 
+### Update Appointment Status
+```bash
+grpcurl -plaintext -d '{
+  "id": "<appointment-id>",
+  "status": "in_progress"
+}' localhost:50052 appointment.AppointmentService/UpdateAppointmentStatus
+```
+**Expected notification-service output:**
+```json
+{"time":"...","subject":"appointments.status_updated","event":{"event_type":"appointments.status_updated","id":"<appointment-id>","new_status":"in_progress","occurred_at":"...","old_status":"new"}}
+```
+
+### List All Appointments
+```bash
+grpcurl -plaintext -d '{}' localhost:50052 appointment.AppointmentService/ListAppointments
+```
+
+---
+
+## 10. Error Handling
+
+| Situation | Expected Behaviour |
+|---|---|
+| Database unavailable on startup | Service exits with non-zero code and descriptive log message |
+| Database query fails at runtime | Returns `codes.Internal` with descriptive message |
+| Broker unavailable at startup (Doctor/Appointment) | Service starts normally, logs WARN, RPC still succeeds |
+| Broker publish fails during RPC | Logs error, RPC response unaffected |
+| Broker unavailable at startup (Notification Service) | Retries with 1s/2s/4s/8s/16s backoff, exits non-zero after 5 attempts |
+| Duplicate email in DB | Returns `codes.AlreadyExists` |
+| Row not found in DB | Returns `codes.NotFound` |
+| Doctor not found via gRPC | Returns `codes.FailedPrecondition` |
+| Doctor Service unreachable | Returns `codes.Unavailable` |
+| Invalid status transition (done→new) | Returns `codes.InvalidArgument` |
+
+---
+
+## 11. Consistency Trade-offs
+
+Because broker publishing is **best-effort**, a process crash between the DB commit and `nc.Publish()` will silently lose the event.
+
+**Concrete failure scenario:**
+1. `CreateDoctor` inserts a row in PostgreSQL — committed.
+2. Process crashes before `nc.Publish("doctors.created", ...)` executes.
+3. Notification Service never receives the event.
+4. The doctor exists in the DB, but no log was produced.
+
+**How to fix in production:**
+
+| Pattern | How it helps |
+|---|---|
+| **Outbox pattern** | Write event to an `outbox` table in the same DB transaction; a separate relay process reads and publishes. Guarantees at-least-once delivery. |
+| **NATS JetStream** | Adds persistent streams and consumer acknowledgment to NATS. Publisher can wait for `PubAck` before returning success. |
+| **RabbitMQ publisher confirms** | Exchange-level delivery confirmation; publisher blocks until broker persists the message. |
+
+---
+
+## 12. Broker Comparison: NATS vs RabbitMQ
+
+| Feature | NATS Core | RabbitMQ |
+|---|---|---|
+| **Persistence** | None — fire-and-forget | Queue-level durability; messages survive broker restart |
+| **Delivery guarantee** | At-most-once | At-least-once (with persistent queues + publisher confirms) |
+| **Setup complexity** | Single binary or one Docker image | Requires Erlang runtime, management plugin, exchange/queue setup |
+| **Throughput** | Very high (~millions of msgs/sec) | High (~hundreds of thousands of msgs/sec) |
+| **Use case** | Stateless notifications, metrics streaming | Financial transactions, task queues, guaranteed delivery |
+
+**When to choose NATS:** Stateless notifications, low-latency internal events where occasional loss is acceptable.
+
+**When to choose RabbitMQ:** Order processing, payment events, any domain where losing a message means losing money or data integrity.
+
+---
 
 ## 13. Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Client / CLI                              │
-│                     (grpcurl / test client)                     │
-└───────────────────┬──────────────────────────────────────────────┘
-                    │
-                    │ (gRPC requests)
-                    │
-        ┌───────────┴────────────┬───────────────┬────────────────┐
-        │                        │               │                │
-   ┌────▼──────────────┐  ┌──────▼──────┐   ┌───▼───────┐    ┌───▼───────┐
-   │  DOCTOR SERVICE   │  │   PORT      │   │  DATABASE │    │   PROTO   │
-   │   (gRPC Server)   │  │   :50051    │   │ doctor DB │    │  contracts│
-   └────┬──────────────┘  └─────────────┘   └───────────┘    └───────────┘
-        │
-        ├── CreateDoctor(CreateDoctorRequest)
-        ├── GetDoctor(GetDoctorRequest) → GetDoctor status
-        └── ListDoctors(ListDoctorsRequest)
-        
-        ▲
-        │ (gRPC client call)
-        │ from Appointment Service
-        │
-   ┌────┴──────────────┐  ┌──────────────┐   ┌───────────┐    ┌───────────┐
-   │APPOINTMENT SERVICE│  │   PORT       │   │ DATABASE  │    │    PROTO  │
-   │   (gRPC Server)   │  │   :50052     │   │appoint DB │    │ contracts │
-   └────┬──────────────┘  └──────────────┘   └───────────┘    └───────────┘
-        │
-        ├── CreateAppointment(CreateAppointmentRequest)
-        │   └─→ Calls Doctor Service.GetDoctor(doctor_id)
-        │       └─→ Validates doctor exists
-        │           └─→ If doctor_id invalid → codes.FailedPrecondition
-        │
-        ├── GetAppointment(GetAppointmentRequest)
-        ├── ListAppointments(ListAppointmentsRequest)
-        └── UpdateAppointmentStatus(UpdateStatusRequest)
-            └─→ Validates status transition
-                └─→ If done→new → codes.InvalidArgument
+ ┌─────────────────────────────────────────────┐
+ │              Client / CLI                    │
+ │           (grpcurl commands)                 │
+ └────────┬─────────────────────┬───────────────┘
+          │ gRPC                │ gRPC
+          ▼                     ▼
+ ┌─────────────────┐    ┌───────────────────┐
+ │  DOCTOR SERVICE │    │ APPOINTMENT SVC   │
+ │   :50051 (gRPC) │◄───│   :50052 (gRPC)   │
+ │  [migrations]   │    │  [migrations]     │
+ └────────┬────────┘    └────────┬──────────┘
+          │ SQL                  │ SQL
+          ▼                      ▼
+ ┌────────────────┐    ┌────────────────────┐
+ │  PostgreSQL    │    │  PostgreSQL        │
+ │  doctor DB     │    │  appointment DB    │
+ └────────────────┘    └────────────────────┘
+          │ doctors.created      │ appointments.created
+          │                      │ appointments.status_updated
+          └──────────┬───────────┘
+                     │ NATS Publish
+                     ▼
+              ┌─────────────┐
+              │    NATS     │
+              │  :4222      │
+              └──────┬──────┘
+                     │ Subscribe (all 3 subjects)
+                     ▼
+        ┌────────────────────────┐
+        │  NOTIFICATION SERVICE  │
+        │  (no port, no DB)      │
+        │  → stdout JSON logs    │
+        └────────────────────────┘
 ```
 
+---
 
-## 14. Project Structure Summary
+## 14. Project Structure
 
 ```
-ap2-assignment2/
-├── doctor/
-│   ├── cmd/service-doctor/
-│   │   └── main.go                          # Server startup, DB init
+Assignment 2/
+├── doctor-service/
+│   ├── cmd/service-doctor/main.go
 │   ├── internal/
-│   │   ├── model/doctor.go                  # Domain entity
-│   │   ├── repository/doctor_repository.go  # PostgreSQL impl
-│   │   ├── usecase/
-│   │   │   ├── create_doctor.go
-│   │   │   ├── get_doctor.go
-│   │   │   └── list_doctor.go
-│   │   └── transport/grpc/doctor_server.go  # gRPC handlers
+│   │   ├── app/migrate.go           ← golang-migrate runner
+│   │   ├── config/config.go         ← reads env vars incl. NATS_URL
+│   │   ├── event/publisher.go       ← Publisher interface + NATS impl + Noop
+│   │   ├── model/doctor.go
+│   │   ├── repository/doctor_repository.go  ← CreateWithEmailCheck (tx)
+│   │   ├── transport/grpc/doctor_server.go
+│   │   └── usecase/
+│   ├── migrations/
+│   │   ├── 000001_create_doctors.up.sql
+│   │   └── 000001_create_doctors.down.sql
 │   ├── proto/
-│   │   ├── doctor.proto                     # Proto contract
-│   │   ├── doctor.pb.go                     # Generated code
-│   │   └── doctor_grpc.pb.go                # Generated code
+│   ├── Dockerfile                   ← multi-stage, context: ./doctor-service
 │   ├── go.mod
 │   └── go.sum
 │
-├── appointment/
-│   ├── cmd/service-appointment/
-│   │   └── main.go                          # Server startup, DB init
+├── appointment-service/
+│   ├── cmd/service-appointment/main.go
 │   ├── internal/
-│   │   ├── model/appointment.go             # Domain entity
-│   │   ├── repository/appointment_repository.go  # PostgreSQL impl
-│   │   ├── usecase/
-│   │   │   ├── create_appointment.go
-│   │   │   ├── get_appointment.go
-│   │   │   ├── list_appointment.go
-│   │   │   └── update_status.go
-│   │   ├── client/doctor_grpc_client.go     # Doctor Service client
-│   │   └── transport/grpc/appointment_server.go  # gRPC handlers
+│   │   ├── app/migrate.go
+│   │   ├── client/doctor_grpc_client.go
+│   │   ├── config/config.go
+│   │   ├── event/publisher.go
+│   │   ├── model/appointment.go
+│   │   ├── repository/appointment_repository.go
+│   │   ├── transport/grpc/appointment_server.go
+│   │   └── usecase/
+│   ├── migrations/
+│   │   ├── 000001_create_appointments.up.sql
+│   │   └── 000001_create_appointments.down.sql
 │   ├── proto/
-│   │   ├── appointment.proto                # Proto contract
-│   │   ├── appointment.pb.go                # Generated code
-│   │   └── appointment_grpc.pb.go           # Generated code
+│   ├── Dockerfile                   ← build context is project root (needs doctor-service/)
 │   ├── go.mod
 │   └── go.sum
 │
-└── README.md                                # This file
+├── notification-service/
+│   ├── cmd/notification-service/main.go
+│   ├── internal/subscriber/subscriber.go
+│   ├── Dockerfile                   ← context: ./notification-service
+│   ├── go.mod
+│   └── go.sum
+│
+├── scripts/
+│   └── init-db.sh                   ← creates doctor + appointment DBs on first Postgres start
+├── docker-compose.yml               ← all 5 services (Postgres, NATS, 3 Go services)
+├── .dockerignore
+└── README.md
 ```
 
+---
 
-## 15. Summary of gRPC Benefits in This Project
+## 15. Clean Architecture Preservation
 
-✅ **Type-Safe Contracts**: Proto files enforce data shapes between services  
-✅ **Efficient Communication**: Binary protocol reduces network overhead  
-✅ **Language Agnostic**: Can add services in Python, Java, etc. without changes  
-✅ **Built-in Error Handling**: Standard gRPC codes for all error scenarios  
-✅ **Method Generation**: protoc generates all server/client stubs automatically  
+**Dependency rule is fully preserved:**
 
+```
+transport/grpc  →  usecase  →  repository  →  model
+                      ↓
+                  event.Publisher (interface)
+```
+
+- `transport/grpc` handlers remain thin — only proto↔domain mapping and error translation.
+- Use cases contain the business logic and are the only layer that publishes events.
+- `event.Publisher` is an interface injected at startup — use cases never import NATS directly.
+- Domain models (`model/`) have zero external dependencies.
+- No infrastructure types (NATS, `*sql.DB`, `migrate.Migrate`) leak into domain or use-case layers.

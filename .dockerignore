@@ -1,0 +1,7 @@
+.git
+.idea
+notification-service
+README.md
+docker-compose.yml
+scripts
+*.md
