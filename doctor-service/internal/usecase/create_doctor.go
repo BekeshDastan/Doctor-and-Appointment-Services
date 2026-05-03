@@ -5,7 +5,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/BekeshDastan/Doctor-and-Appointment-Services/doctor-service/internal/event"
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/doctor-service/internal/model"
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/doctor-service/internal/repository"
 )
@@ -22,10 +21,10 @@ type CreateDoctorUseCase interface {
 
 type createDoctorInteractor struct {
 	repo repository.DoctorRepository
-	pub  event.Publisher
+	pub  Publisher
 }
 
-func NewCreateDoctorUseCase(repo repository.DoctorRepository, pub event.Publisher) CreateDoctorUseCase {
+func NewCreateDoctorUseCase(repo repository.DoctorRepository, pub Publisher) CreateDoctorUseCase {
 	return &createDoctorInteractor{repo: repo, pub: pub}
 }
 

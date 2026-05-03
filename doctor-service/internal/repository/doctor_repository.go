@@ -8,7 +8,10 @@ import (
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/doctor-service/internal/model"
 )
 
-var ErrEmailAlreadyExists = errors.New("a doctor with this email already exists")
+var (
+	ErrEmailAlreadyExists = errors.New("a doctor with this email already exists")
+	ErrDoctorNotFound     = errors.New("doctor not found")
+)
 
 type DoctorRepository interface {
 	CreateDoctor(ctx context.Context, doctor *model.Doctor) error
@@ -73,7 +76,7 @@ func (r *postgresDoctorRepository) GetDoctorById(ctx context.Context, id string)
 	err := row.Scan(&doc.ID, &doc.FullName, &doc.Specialization, &doc.Email)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, errors.New("doctor not found")
+			return nil, ErrDoctorNotFound
 		}
 		return nil, err
 	}
@@ -122,7 +125,7 @@ func (r *postgresDoctorRepository) GetByEmail(ctx context.Context, email string)
 	err := row.Scan(&doc.ID, &doc.FullName, &doc.Specialization, &doc.Email)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, errors.New("doctor not found")
+			return nil, ErrDoctorNotFound
 		}
 		return nil, err
 	}

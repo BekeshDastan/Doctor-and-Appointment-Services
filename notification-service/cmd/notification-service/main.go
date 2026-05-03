@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +10,8 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	url := os.Getenv("NATS_URL")
 	if url == "" {
 		url = "nats://localhost:4222"
@@ -17,7 +19,8 @@ func main() {
 
 	nc, err := subscriber.ConnectWithBackoff(url, 5)
 	if err != nil {
-		log.Fatalf("Failed to connect to broker: %v", err)
+		slog.Error("failed to connect to broker", "error", err)
+		os.Exit(1)
 	}
 	defer nc.Drain()
 
@@ -27,11 +30,11 @@ func main() {
 		"appointments.status_updated",
 	})
 
-	log.Println("Notification Service is running — waiting for events...")
+	slog.Info("notification service running", "status", "waiting for events")
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 
-	log.Println("Shutting down Notification Service")
+	slog.Info("shutting down notification service")
 }

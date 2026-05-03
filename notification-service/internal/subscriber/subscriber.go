@@ -3,7 +3,7 @@ package subscriber
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -15,10 +15,10 @@ func ConnectWithBackoff(url string, maxAttempts int) (*nats.Conn, error) {
 	for i := 1; i <= maxAttempts; i++ {
 		nc, err := nats.Connect(url)
 		if err == nil {
-			log.Printf("Connected to NATS at %s", url)
+			slog.Info("connected to NATS", "url", url)
 			return nc, nil
 		}
-		log.Printf("NATS connect attempt %d/%d failed: %v — retrying in %s", i, maxAttempts, err, delay)
+		slog.Warn("NATS connect attempt failed", "attempt", i, "max_attempts", maxAttempts, "error", err, "retry_in", delay.String())
 		time.Sleep(delay)
 		delay *= 2
 	}
@@ -32,9 +32,9 @@ func Subscribe(nc *nats.Conn, subjects []string) {
 			handle(s, msg.Data)
 		})
 		if err != nil {
-			log.Printf("ERROR: failed to subscribe to %s: %v", s, err)
+			slog.Error("failed to subscribe", "subject", s, "error", err)
 		} else {
-			log.Printf("Subscribed to %s", s)
+			slog.Info("subscribed", "subject", s)
 		}
 	}
 }
@@ -42,7 +42,7 @@ func Subscribe(nc *nats.Conn, subjects []string) {
 func handle(subject string, data []byte) {
 	var payload map[string]any
 	if err := json.Unmarshal(data, &payload); err != nil {
-		fmt.Fprintf(os.Stderr, `{"level":"error","subject":%q,"error":%q}`+"\n", subject, err.Error())
+		slog.Error("failed to unmarshal event", "subject", subject, "error", err)
 		return
 	}
 
@@ -52,5 +52,6 @@ func handle(subject string, data []byte) {
 		"event":   payload,
 	}
 	b, _ := json.Marshal(out)
-	fmt.Println(string(b))
+	os.Stdout.Write(b)
+	os.Stdout.Write([]byte("\n"))
 }

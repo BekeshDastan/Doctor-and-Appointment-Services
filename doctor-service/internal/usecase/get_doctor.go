@@ -2,6 +2,7 @@
 
 import (
 	"context"
+	"errors"
 
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/doctor-service/internal/model"
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/doctor-service/internal/repository"
@@ -25,7 +26,7 @@ func (uc *getDoctorByIdUseCase) Execute(ctx context.Context, id string) (*model.
 	}
 	doctor, err := uc.repo.GetDoctorById(ctx, id)
 	if err != nil {
-		if err.Error() == "doctor not found" {
+		if errors.Is(err, repository.ErrDoctorNotFound) {
 			return nil, ErrDoctorNotFound
 		}
 		return nil, err

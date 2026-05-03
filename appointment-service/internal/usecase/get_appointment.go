@@ -2,6 +2,7 @@
 
 import (
 	"context"
+	"errors"
 
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/appointment-service/internal/model"
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/appointment-service/internal/repository"
@@ -18,7 +19,7 @@ func NewGetAppointmentUseCase(repo repository.AppointmentRepository) *GetAppoint
 func (uc *GetAppointmentUseCase) Execute(ctx context.Context, id string) (*model.Appointment, error) {
 	apt, err := uc.repo.GetByID(ctx, id)
 	if err != nil {
-		if err.Error() == "appointment not found" {
+		if errors.Is(err, repository.ErrNotFound) {
 			return nil, ErrAptNotFound
 		}
 		return nil, err

@@ -8,6 +8,8 @@ import (
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/appointment-service/internal/model"
 )
 
+var ErrNotFound = errors.New("appointment not found")
+
 type AppointmentRepository interface {
 	Create(ctx context.Context, appt *model.Appointment) error
 	GetByID(ctx context.Context, id string) (*model.Appointment, error)
@@ -61,7 +63,7 @@ func (r *postgresAppointmentRepository) GetByID(ctx context.Context, id string) 
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, errors.New("appointment not found")
+			return nil, ErrNotFound
 		}
 		return nil, err
 	}
@@ -107,11 +109,20 @@ func (r *postgresAppointmentRepository) List(ctx context.Context) ([]*model.Appo
 }
 
 func (r *postgresAppointmentRepository) Update(ctx context.Context, appt *model.Appointment) error {
-	query := `
-		UPDATE appointments 
-		SET status = $1, updated_at = $2 
-		WHERE id = $3
-	`
-	_, err := r.db.ExecContext(ctx, query, appt.Status, appt.UpdatedAt, appt.ID)
-	return err
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx,
+		`UPDATE appointments SET status = $1, updated_at = $2 WHERE id = $3`,
+		appt.Status, appt.UpdatedAt, appt.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
 }

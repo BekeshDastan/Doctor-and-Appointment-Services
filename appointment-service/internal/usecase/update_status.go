@@ -2,26 +2,29 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
-	"github.com/BekeshDastan/Doctor-and-Appointment-Services/appointment-service/internal/event"
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/appointment-service/internal/model"
 	"github.com/BekeshDastan/Doctor-and-Appointment-Services/appointment-service/internal/repository"
 )
 
 type UpdateStatusUseCase struct {
 	repo repository.AppointmentRepository
-	pub  event.Publisher
+	pub  Publisher
 }
 
-func NewUpdateStatusUseCase(repo repository.AppointmentRepository, pub event.Publisher) *UpdateStatusUseCase {
+func NewUpdateStatusUseCase(repo repository.AppointmentRepository, pub Publisher) *UpdateStatusUseCase {
 	return &UpdateStatusUseCase{repo: repo, pub: pub}
 }
 
 func (uc *UpdateStatusUseCase) Execute(ctx context.Context, id string, newStatus model.Status) error {
 	appt, err := uc.repo.GetByID(ctx, id)
 	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return ErrAptNotFound
+		}
 		return err
 	}
 
