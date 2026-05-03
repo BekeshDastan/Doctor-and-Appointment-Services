@@ -128,19 +128,19 @@ Migrations are applied automatically when each service starts.
 **Terminal 1 — Doctor Service:**
 ```bash
 cd doctor-service
-go run .
+go run ./cmd/service-doctor
 ```
 
 **Terminal 2 — Appointment Service:**
 ```bash
 cd appointment-service
-go run .
+go run ./cmd/service-appointment
 ```
 
 **Terminal 3 — Notification Service:**
 ```bash
 cd notification-service
-go run .
+go run ./cmd/notification-service
 ```
 
 > **Why this order?** Appointment Service dials Doctor Service at startup. If Doctor Service is not running, Appointment Service exits with a fatal error.
